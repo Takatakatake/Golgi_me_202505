@@ -1,0 +1,77 @@
+# /srv/ansible/backup_configs.yml
+---
+- hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Check free disk space on /root
+      shell: df -h /root | tail -1 | awk '{print $4}'
+      register: free_space
+      changed_when: false
+
+    - name: Warn if disk space is low
+      debug:
+        msg: "WARNING: Low disk space for backups. Available: {{ free_space.stdout }}"
+      when: free_space.stdout is defined and ((free_space.stdout | regex_replace('G', '') | float) < 1.0)
+
+    - name: Create dated backup directory
+      file:
+        path: "/root/ansible_backups/{{ ansible_date_time.date }}"
+        state: directory
+        mode: '0700'
+
+    - name: Backup common configuration files
+      copy:
+        src: "{{ item }}"
+        dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - /etc/hosts
+        - /etc/nsswitch.conf
+        - /etc/defaultdomain
+        - /etc/yp.conf
+      ignore_errors: yes
+
+    - name: Backup SLURM configuration files if they exist
+      copy:
+        src: "{{ item }}"
+        dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - "{{ lookup('env', 'SLURM_CONF') | default('/opt/slurm/etc/slurm.conf') }}"
+        - "{{ lookup('env', 'SLURM_CONF') | default('/opt/slurm/etc') }}/gres.conf"
+      ignore_errors: yes
+
+    - name: Backup NIS configuration files on server
+      copy:
+        src: "{{ item }}"
+        dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - /var/yp/Makefile
+        - /etc/ypserv.securenets
+      ignore_errors: yes
+      when: "'localhost' in inventory_hostname"
+
+    - name: Backup NFS configuration files on server
+      copy:
+        src: "{{ item }}"
+        dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - /etc/exports
+      ignore_errors: yes
+      when: "'localhost' in inventory_hostname"
+
+    - name: Backup additional configuration files if they exist
+      copy:
+        src: "{{ item }}"
+        dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - /etc/ssh/sshd_config
+        - /etc/network/interfaces
+        - /etc/fstab
+        - /etc/resolv.conf
+        - /etc/apt/apt.conf.d/20auto-upgrades
+      ignore_errors: yes

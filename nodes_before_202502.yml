@@ -1,0 +1,15 @@
+- hosts: nodes
+  become: yes
+  roles:
+    - role: child-ubuntu
+    - role: apt
+    - role: nis
+    - role: nfs
+    - role: gromacs-2020.3
+    - role: gromacs-2022.4-child
+    - role: tensorflow
+    - role: lm-sensors
+    - role: slurm
+      services:
+        - slurmd.service
+    - role: child-alphafold

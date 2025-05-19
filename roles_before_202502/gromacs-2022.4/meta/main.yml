@@ -1,0 +1,3 @@
+---
+dependencies:
+ - cuda-12.0

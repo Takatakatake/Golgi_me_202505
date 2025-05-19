@@ -1,0 +1,3 @@
+version: 2019.4
+source_directory: /opt/src
+install_prefix: /opt/gromacs

@@ -1,0 +1,3 @@
+version: 5.1.1
+source_directory: /opt/src
+install_prefix: /opt/gromacs

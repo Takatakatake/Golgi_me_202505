@@ -1,0 +1,42 @@
+- name: install nis package
+  apt:
+    name: nis
+    state: present
+    update_cache: yes
+  notify: restart nis
+
+- name: set defaultdomain
+  copy:
+    dest: /etc/defaultdomain
+    content: "{{ domain }}"
+  notify: restart nis
+
+- name: set a domain name
+  lineinfile:
+    path: /etc/yp.conf
+    line: "domain {{ domain }} server {{ server }}"
+  notify: restart nis
+
+- meta: flush_handlers
+
+- name: configure nsswitch.conf
+  replace:
+    dest: /etc/nsswitch.conf
+    regexp: '^(passwd|group|shadow):((?!.*nis).*)$'
+    replace: '\1:\2 nis'
+
+- name: modify logind-systemd configuration for ssh
+  replace:
+    path: /lib/systemd/system/systemd-logind.service
+    regexp: '^IPAddressDeny=any'
+    replace: '#IPAddressDeny=any'
+
+- name: modify MINGID in yp Makefile
+  replace:
+    path: /var/yp/Makefile
+    regexp: '^MINGID=.*'
+    replace: 'MINGID=999'
+
+- name: reload logind-systemd config
+  systemd:
+    daemon_reload: yes

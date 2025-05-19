@@ -1,0 +1,142 @@
+# /srv/ansible/admin.yml
+---
+  # 前段の確認タスク - 親ノードで実行
+  - hosts: localhost
+    connection: local
+    become: yes
+    gather_facts: yes
+    tasks:
+      - name: Create backup directory
+        file:
+          path: /root/ansible_backups/{{ ansible_date_time.date }}
+          state: directory
+          mode: '0700'
+        
+      - name: Backup critical configuration files
+        copy:
+          src: "{{ item }}"
+          dest: "/root/ansible_backups/{{ ansible_date_time.date }}/{{ item | basename }}.bak"
+          remote_src: yes
+        with_items:
+          - /etc/defaultdomain
+          - /etc/exports
+          - /etc/hosts
+          - /etc/iptables.rules
+          - /var/yp/Makefile
+          - "{{ lookup('env', 'SLURM_CONF') | default('/opt/slurm/etc/slurm.conf') }}"
+        ignore_errors: yes
+      
+      - name: Check if critical services are running
+        command: systemctl is-active {{ item }}
+        register: service_status_result
+        ignore_errors: yes
+        changed_when: false
+        with_items:
+          - rpcbind
+          - nfs-kernel-server
+          - slurmctld
+        
+      - name: Set service status facts
+        set_fact:
+          service_status: "{{ service_status|default({}) | combine({item.item: (item.rc == 0)}) }}"
+        with_items: "{{ service_status_result.results }}"
+  
+  # 常に安全に適用できる基本設定のみを最初に適用
+  - hosts: localhost
+    connection: local
+    become: yes
+    roles:
+      - role: apt
+      - role: admin-ubuntu
+  
+  # NFS関連の処理を条件付きで適用
+  - hosts: localhost
+    connection: local
+    become: yes
+    tasks:
+      - name: Check if /home is already mounted
+        shell: mount | grep "on /home"
+        register: home_mount
+        ignore_errors: yes
+        changed_when: false
+        
+      - name: Apply NFS role only if /home is not properly mounted
+        include_role:
+          name: nfs
+        when: home_mount.rc != 0 or home_mount.stdout == ""
+  
+  # NIS Server関連の処理を条件付きで適用
+  - hosts: localhost
+    connection: local
+    become: yes
+    tasks:
+      - name: Check if NIS server is running
+        command: systemctl status nis
+        register: nis_status
+        ignore_errors: yes
+        changed_when: false
+        
+      - name: Check MINGID setting in NIS Makefile
+        command: grep -E "^MINGID=999" /var/yp/Makefile
+        register: mingid_check
+        ignore_errors: yes
+        changed_when: false
+        when: nis_status.rc == 0
+        
+      - name: Apply NIS server role if not running or MINGID is incorrect
+        include_role:
+          name: nis-server
+        when: nis_status.rc != 0 or (mingid_check is defined and mingid_check.rc != 0)
+  
+  # その他のロールを必要に応じて適用
+  - hosts: localhost
+    connection: local
+    become: yes
+    tasks:
+      - name: Check if gfortran is installed
+        command: which gfortran
+        register: gfortran_installed
+        ignore_errors: yes
+        changed_when: false
+        
+      - name: Apply gfortran role only if not installed
+        include_role:
+          name: gfortran
+        when: gfortran_installed.rc != 0
+      
+      - name: Check if Gromacs 2022.4 is installed
+        stat:
+          path: /opt/gromacs-2022.4/bin/gmx
+        register: gromacs_2022_installed
+        
+      - name: Apply Gromacs 2022.4 role only if not installed
+        include_role:
+          name: gromacs-2022.4
+        when: not gromacs_2022_installed.stat.exists
+      
+      - name: Check if Slurm is configured and running
+        command: systemctl status slurmctld
+        register: slurmctld_status
+        ignore_errors: yes
+        changed_when: false
+        
+      - name: Apply Slurm role only if not properly configured or running
+        include_role:
+          name: slurm
+          apply:
+            tags: ["configuration"] 
+        when: slurmctld_status.rc != 0
+        vars:
+          services:
+            - slurmctld.service
+      
+      - name: Check if AlphaFold directory is mounted
+        shell: mount | grep alphafold
+        register: alphafold_mounted
+        ignore_errors: yes
+        changed_when: false
+        
+      - name: Apply AlphaFold admin role only if not properly mounted
+        include_role:
+          name: admin-alphafold
+        when: alphafold_mounted.rc != 0 or alphafold_mounted.stdout == ""

@@ -1,0 +1,11 @@
+- name: update library location
+  command: "ldconfig -n {{ install_prefix }}/lib"
+  listen: update ldconfig
+
+- name: restart SLURM services
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: yes
+  loop: "{{ services }}"
+  listen: restart services

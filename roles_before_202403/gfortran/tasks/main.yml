@@ -1,0 +1,5 @@
+- name: install gfortran
+  apt:
+    name: gfortran
+    state: present
+    update_cache: yes

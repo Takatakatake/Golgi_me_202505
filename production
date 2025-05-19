@@ -1,0 +1,67 @@
+# /srv/ansible/production
+# Golgiクラスターインベントリファイル
+# 最終更新: 2025-02-27
+
+# 全ノードグループ
+[nodes]
+golgi01
+golgi02
+golgi03
+golgi04
+golgi05
+golgi06
+golgi07
+golgi08
+golgi09
+golgi10
+golgi11
+golgi12
+golgi13
+golgi14
+golgi15
+
+
+# 接続可能なノードグループ（ピング成功したノード）
+[nodes_online]
+golgi05
+golgi06
+golgi07
+golgi08
+golgi09
+golgi10
+golgi12
+golgi13
+golgi14
+golgi15
+
+# GPUタイプ別グループ - ノードのGPUが変更された場合はここを更新
+[nodes_gtx780ti]  # GeForce GTX 780Ti (Compute Capability 3.5)
+golgi14
+
+[nodes_rtx2080]   # RTX 2080/2080 SUPER (Compute Capability 7.5)
+golgi08
+golgi09
+golgi10
+golgi11
+golgi12
+golgi13
+
+# CUDAバージョン別グループ - GPUタイプに応じて適切なバージョンが必要
+[nodes_cuda102]   # CUDA 10.2 - 旧世代GPU向け (Compute 3.0-6.2)
+golgi14
+
+[nodes_cuda114]   # CUDA 11.4 - 新世代GPU向け (Compute 7.0+)
+golgi08
+golgi09
+golgi10
+golgi11
+golgi12
+golgi13
+
+# その他のグループは必要に応じて追加可能
+# 例: 特定のメモリ容量、CPU世代、用途など
+
+[nodes:vars]
+ansible_ssh_user=ansible
+ansible_ssh_pass=ansible
+ansible_python_interpreter=/usr/bin/python3

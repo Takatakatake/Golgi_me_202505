@@ -1,0 +1,110 @@
+# /srv/ansible/verify_changes.yml
+---
+- name: Verify system functionality after changes
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Check network connectivity
+      command: ping -c 1 GolgiAdmin
+      register: ping_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report network status
+      debug:
+        msg: "Network connectivity to GolgiAdmin: {{ 'OK' if ping_result.rc == 0 else 'FAILED' }}"
+
+    - name: Check NIS functionality
+      command: ypcat passwd
+      register: nis_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report NIS status
+      debug:
+        msg: "NIS functionality: {{ 'OK' if nis_result.rc == 0 else 'FAILED' }}"
+
+    - name: Check NFS mounts
+      command: df -h
+      register: df_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report NFS status
+      debug:
+        msg: "NFS mounts: {{ 'OK' if '/home' in df_result.stdout else 'FAILED' }}"
+
+    - name: Check NVIDIA driver status
+      command: nvidia-smi
+      register: nvidia_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report NVIDIA status
+      debug:
+        msg: "NVIDIA driver: {{ 'OK' if nvidia_result.rc == 0 else 'FAILED' }}"
+
+    - name: Check Slurm functionality
+      command: sinfo
+      register: slurm_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report Slurm status
+      debug:
+        msg: "Slurm functionality: {{ 'OK' if slurm_result.rc == 0 else 'FAILED' }}"
+
+    - name: Check Gromacs functionality (using full path)
+      stat:
+        path: /opt/gromacs/bin/gmx # フルパスで存在確認
+      register: gromacs_binary_check
+
+    - name: Check Gromacs version if installed (using full path)
+      command: /opt/gromacs/bin/gmx --version # フルパスでバージョン確認
+      register: gromacs_version
+      ignore_errors: yes
+      changed_when: false
+      when: gromacs_binary_check.stat.exists # stat の結果で実行判定
+
+    - name: Report Gromacs status
+      debug:
+        # 以前の report タスクと同様だが、判定条件を stat の結果にする
+        msg: "Gromacs: {{ 'OK - Version ' + gromacs_version.stdout.split('\n')[0] if gromacs_binary_check.stat.exists else 'NOT FOUND' }}"
+      when: gromacs_binary_check.stat.exists or gromacs_version is defined # レポートはどちらかの条件で出す
+
+    - name: Check Docker and AlphaFold functionality
+      command: docker images alphafold
+      register: alphafold_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Report AlphaFold status
+      debug:
+        msg: "AlphaFold Docker image: {{ 'AVAILABLE' if 'alphafold' in alphafold_check.stdout else 'NOT FOUND' }}"
+      when: alphafold_check.rc == 0
+
+    - name: Collect all verification results
+      set_fact:
+        system_status: "{{ {
+          'network': ping_result.rc == 0,
+          'nis': nis_result.rc == 0,
+          'nfs': '/home' in df_result.stdout,
+          'nvidia': nvidia_result.rc == 0,
+          'slurm': slurm_result.rc == 0
+        } }}"
+
+    - name: Generate overall system status report
+      debug:
+        msg: 
+          - "==== System Verification Report for {{ inventory_hostname }} ===="
+          - "Network Connectivity: {{ 'OK' if system_status.network else 'FAILED' }}"
+          - "NIS Functionality: {{ 'OK' if system_status.nis else 'FAILED' }}"
+          - "NFS Mounts: {{ 'OK' if system_status.nfs else 'FAILED' }}"
+          - "NVIDIA Driver: {{ 'OK' if system_status.nvidia else 'FAILED' }}"
+          - "Slurm Functionality: {{ 'OK' if system_status.slurm else 'FAILED' }}"
+          - "Overall Status: {{ 'OK' if (system_status.network and system_status.nis and system_status.nfs and system_status.nvidia and system_status.slurm) else 'ISSUES DETECTED' }}"
+
+    - name: Send alert if verification failed
+      debug:
+        msg: "ATTENTION: One or more system components failed verification on {{ inventory_hostname }}. Please check the detailed report above."
+      when: not (system_status.network and system_status.nis and system_status.nfs and system_status.nvidia and system_status.slurm)

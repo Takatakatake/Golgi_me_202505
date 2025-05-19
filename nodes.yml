@@ -1,0 +1,188 @@
+# /srv/ansible/nodes.yml
+---
+# 前段の確認タスク - すべてのノードで実行
+- hosts: nodes
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Check NVIDIA driver status
+      command: nvidia-smi
+      register: nvidia_smi_result
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Check running jobs
+      command: squeue -h -o "%i %u" -t running -w {{ ansible_hostname }}
+      register: running_jobs
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Set backup directory path
+      set_fact:
+        backup_dir: "/root/ansible_backups/{{ ansible_date_time.date | regex_replace('-', '') }}"
+    
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      register: dir_created
+
+    - name: Display backup directory path for verification
+      debug:
+        msg: "バックアップディレクトリ {{ backup_dir }} が作成されました"
+      when: dir_created.changed
+
+    - name: Backup critical configuration files
+      copy:
+        src: "{{ item }}"
+        dest: "{{ backup_dir }}/{{ item | basename }}.bak"
+        remote_src: yes
+      with_items:
+        - /etc/defaultdomain
+        - /etc/yp.conf
+        - /etc/nsswitch.conf
+        - /opt/slurm/etc/slurm.conf  # 直接指定
+        - /opt/slurm/etc/gres.conf  # gres.confも追加推奨
+      ignore_errors: yes
+      when: dir_created.changed or dir_created.skipped is defined
+      
+# 常に安全に適用できる基本設定のみを最初に適用
+- hosts: nodes
+  become: yes
+  roles:
+    - role: child-ubuntu
+    - role: apt
+    - role: nis
+    - role: nfs
+    - role: lm-sensors
+
+# CUDA関連の処理を条件付きで適用（GPUタイプごとに差別化）
+- hosts: nodes
+  become: yes
+  tasks:
+    - name: Detect GPU type
+      shell: nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1
+      register: gpu_type
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Set fact for GTX 780Ti nodes
+      set_fact:
+        is_gtx780ti: true
+      when: gpu_type.stdout is defined and 'GTX 780Ti' in gpu_type.stdout
+      
+    - name: Set fact for RTX 2080 nodes
+      set_fact:
+        is_rtx2080: true
+      when: gpu_type.stdout is defined and ('RTX 2080' in gpu_type.stdout or 'RTX 2080 SUPER' in gpu_type.stdout)
+      
+    - name: Set fact for GTX 780Ti nodes from inventory (fallback)
+      set_fact:
+        is_gtx780ti: true
+      when: (is_gtx780ti is not defined or not is_gtx780ti) and inventory_hostname in groups['nodes_gtx780ti']
+      
+    - name: Set fact for RTX 2080 nodes from inventory (fallback)
+      set_fact:
+        is_rtx2080: true
+      when: (is_rtx2080 is not defined or not is_rtx2080) and inventory_hostname in groups['nodes_rtx2080']
+      
+    - name: Apply CUDA 10.2 only for GTX 780Ti nodes when needed
+      include_role:
+        name: cuda-10.2
+      when: 
+        - is_gtx780ti is defined and is_gtx780ti
+        - nvidia_smi_result.rc != 0 or running_jobs.stdout == ""
+        
+    - name: Apply CUDA 11.4 only for RTX 2080 nodes when needed
+      include_role:
+        name: cuda-11.4
+      when: 
+        - is_rtx2080 is defined and is_rtx2080
+        - nvidia_smi_result.rc != 0 or running_jobs.stdout == ""
+
+# Gromacs関連の処理を条件付きで適用
+- hosts: nodes
+  become: yes
+  tasks:
+    - name: Check if Gromacs 2020.3 is installed
+      stat:
+        path: /opt/gromacs-2020.3/bin/gmx
+      register: gromacs_2020_installed
+      
+    - name: Check if Gromacs 2022.4 is installed 
+      stat:
+        path: /opt/gromacs-2022.4/bin/gmx
+      register: gromacs_2022_installed
+      
+    - name: Apply Gromacs 2020.3 role only if not installed (for GTX 780Ti nodes)
+      include_role:
+        name: gromacs-2020.3
+      when: 
+        - is_gtx780ti is defined and is_gtx780ti
+        - not gromacs_2020_installed.stat.exists
+        
+    - name: Apply Gromacs 2022.4 role only if not installed (for RTX 2080 nodes)
+      include_role:
+        name: gromacs-2022.4-child
+      when: 
+        - is_rtx2080 is defined and is_rtx2080
+        - not gromacs_2022_installed.stat.exists
+
+# Tensorflow関連の処理を安全に適用
+- hosts: nodes
+  become: yes
+  tasks:
+    - name: Check if Docker is installed
+      command: which docker
+      register: docker_installed
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Check if NVIDIA Docker is configured
+      command: docker info
+      register: docker_info
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Apply Tensorflow role only if Docker or NVIDIA Docker is not properly configured
+      include_role:
+        name: tensorflow
+      when: docker_installed.rc != 0 or "NVIDIA" not in docker_info.stdout
+
+# Slurm関連の処理を最後に、かつ安全に適用
+- hosts: nodes
+  become: yes
+  tasks:
+    - name: Check if Slurm is configured and running
+      command: systemctl status slurmd
+      register: slurmd_status
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Apply Slurm role only if not properly configured or running
+      include_role:
+        name: slurm
+        apply:
+          tags: ["configuration"] 
+      when: slurmd_status.rc != 0
+      vars:
+        services:
+          - slurmd.service
+
+# AlphaFold関連の処理を最後に適用
+- hosts: nodes
+  become: yes
+  tasks:
+    - name: Check if AlphaFold directory is mounted
+      shell: mount | grep alphafold
+      register: alphafold_mounted
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Apply AlphaFold role only if not properly mounted
+      include_role:
+        name: child-alphafold
+      when: alphafold_mounted.rc != 0 or alphafold_mounted.stdout == ""
+
+

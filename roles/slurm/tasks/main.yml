@@ -1,0 +1,176 @@
+# /srv/ansible/roles/slurm/tasks/main.yml
+---
+- name: install build-essential
+  apt:
+    name: build-essential
+    state: present
+
+- name: Check if slurm binary exists
+  stat: 
+    path: "{{ install_prefix }}/sbin/slurmctld"
+  register: slurmctld
+
+- name: Check Slurm functionality
+  command: "{{ install_prefix }}/bin/scontrol version"
+  register: slurm_version_check
+  ignore_errors: yes
+  changed_when: false
+  when: slurmctld.stat.exists
+
+- name: make a source directory
+  file:
+    path: "{{ source_directory }}"
+    state: directory
+
+- name: unarchive source files
+  unarchive:
+    src: "slurm-{{ slurm_version }}.tar.bz2"
+    dest: "{{ source_directory }}"
+  when: not slurmctld.stat.exists or (slurm_version_check is defined and slurm_version_check.rc != 0)
+
+- name: configure SLURM
+  command: "./configure --prefix={{ install_prefix }}"
+  args:
+    chdir: "{{ source_directory }}/slurm-{{ slurm_version }}"
+  register: configured
+  when: not slurmctld.stat.exists or (slurm_version_check is defined and slurm_version_check.rc != 0)
+
+- name: "make {{ install_prefix }}/etc"
+  file:
+    path: "{{ install_prefix }}/etc"
+    state: directory
+
+- name: Check if slurm.conf exists
+  stat:
+    path: "{{ install_prefix }}/etc/slurm.conf"
+  register: slurm_conf_exists
+
+- name: Backup existing slurm.conf
+  copy:
+    src: "{{ install_prefix }}/etc/slurm.conf"
+    dest: "{{ install_prefix }}/etc/slurm.conf.bak.{{ ansible_date_time.iso8601 }}"
+  when: slurm_conf_exists.stat.exists
+
+- name: Check current Slurm configuration
+  command: grep -c "NodeName=" {{ install_prefix }}/etc/slurm.conf
+  register: slurm_node_count
+  ignore_errors: yes
+  changed_when: false
+  when: slurm_conf_exists.stat.exists
+
+- name: Generate expected Slurm configuration to temporary file
+  template:
+    src: slurm2.conf.j2
+    dest: "/tmp/slurm_new.conf"
+  check_mode: yes
+  when: slurm_conf_exists.stat.exists
+  
+- name: Count nodes in expected configuration
+  command: grep -c "NodeName=" /tmp/slurm_new.conf
+  register: expected_node_count
+  ignore_errors: yes
+  changed_when: false
+  when: slurm_conf_exists.stat.exists
+
+- name: Update slurm.conf if node count differs or doesn't exist
+  template:
+    src: slurm2.conf.j2
+    dest: "{{ install_prefix }}/etc/slurm.conf"
+  register: slurm_conf
+  notify: restart services
+  when: >
+    not slurm_conf_exists.stat.exists or 
+    (slurm_node_count is defined and expected_node_count is defined and 
+     slurm_node_count.stdout != expected_node_count.stdout)
+
+- name: compile and install SLURM
+  make:
+    target: "{{ item }}"
+    chdir: "{{ source_directory }}/slurm-{{ slurm_version }}"
+  with_items:
+    - all
+    - install
+  when: >
+    not slurmctld.stat.exists or 
+    (slurm_version_check is defined and slurm_version_check.rc != 0) or
+    slurm_conf.changed
+
+- name: Check if ldconf file exists
+  stat:
+    path: /etc/ld.so.conf.d/slurm.conf
+  register: ld_conf_exists
+
+- name: add a ldconf file for SLURM
+  copy:
+    dest: /etc/ld.so.conf.d/slurm.conf
+    content: "{{ install_prefix }}/lib"
+  notify: update ldconfig
+  when: not ld_conf_exists.stat.exists
+
+- name: make directories for SLURM
+  file:
+    path: "{{ item }}"
+    state: directory
+    recurse: yes
+    owner: "{{ user }}"
+  with_items:
+    - "{{ state_dir }}"
+    - "{{ spool_dir }}"
+    - "{{ slurm_logdir }}"
+
+- stat:
+    path: "{{ accounting_file }}"
+  register: acct_result
+
+- name: touch a file for accouting
+  file:
+    path: "{{ accounting_file }}"
+    owner: "{{ user }}"
+    state: touch
+  when: not acct_result.stat.exists
+
+- name: Check if gres.conf exists
+  stat:
+    path: "{{ install_prefix }}/etc/gres.conf"
+  register: gres_conf_exists
+
+- name: Backup existing gres.conf
+  copy:
+    src: "{{ install_prefix }}/etc/gres.conf"
+    dest: "{{ install_prefix }}/etc/gres.conf.bak.{{ ansible_date_time.iso8601 }}"
+  when: gres_conf_exists.stat.exists
+
+- name: copy gres.conf only if it doesn't exist
+  copy:
+    src: gres.conf
+    dest: "{{ install_prefix }}/etc"
+  when: not gres_conf_exists.stat.exists
+
+- name: Check for service files
+  stat:
+    path: "/lib/systemd/system/{{ item }}"
+  register: service_files
+  with_items: "{{ services }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: copy service files for SLURM
+  copy:
+    src: "{{ source_directory }}/slurm-{{ slurm_version }}/etc/{{ item }}"
+    dest: "/lib/systemd/system/{{ item }}"
+    remote_src: yes
+  with_items: "{{ services }}"
+  when: not service_files.results[0].stat.exists
+  notify: restart services
+
+- name: enable services
+  systemd:
+    name: "{{ item }}"
+    enabled: yes
+    daemon_reload: yes
+  loop: "{{ services }}"
+
+- name: set path setting script for slurm in admin
+  copy:
+    src: slurm-bin-path.sh
+    dest: "/etc/profile.d/slurm-bin-path.sh"

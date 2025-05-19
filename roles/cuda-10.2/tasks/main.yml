@@ -1,0 +1,127 @@
+# /srv/ansible/roles/cuda-10.2/tasks/main.yml
+---
+- name: Check if CUDA 10.2 is already installed
+  command: /usr/local/cuda/bin/nvcc --version
+  register: cuda_version_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Check CUDA installation directory
+  stat:
+    path: /usr/local/cuda-10.2
+  register: cuda_10_2_dir
+
+- name: Check if GPU drivers are already working
+  command: nvidia-smi
+  register: nvidia_smi_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Check for running jobs
+  command: squeue -h -o "%i" -t running -w {{ ansible_hostname }}
+  register: running_jobs
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display warning about running jobs
+  debug:
+    msg: "WARNING: There are running jobs. Installation will proceed but reboot will be skipped."
+  when: running_jobs.stdout_lines | length > 0
+
+- name: Proceed with CUDA 10.2 installation only if needed
+  block:
+    - name: Check source file existence
+      stat:
+        path: "{{ role_path }}/files/cuda-repo-{{ deb_version }}_amd64.deb"
+      register: cuda_source_file
+      delegate_to: localhost
+    
+    - name: Debug source file path
+      debug:
+        msg: "Source file exists: {{ cuda_source_file.stat.exists }} at {{ role_path }}/files/cuda-repo-{{ deb_version }}_amd64.deb"
+    
+    - name: Copy CUDA .deb files
+      copy:
+        src: "files/cuda-repo-{{ deb_version }}_amd64.deb"
+        dest: "/tmp/cuda.deb"
+        mode: '0644'
+      when: cuda_source_file.stat.exists
+      register: copy_result
+    
+    - name: Skip CUDA installation if source file missing
+      debug:
+        msg: "WARNING: CUDA source file not found. Installation will be skipped."
+      when: not cuda_source_file.stat.exists
+    
+    - name: Verify .deb file exists after copy
+      stat:
+        path: "/tmp/cuda.deb"
+      register: cuda_deb_check
+      when: cuda_source_file.stat.exists
+    
+    - name: Show copy status
+      debug:
+        msg: "CUDA .deb file exists: {{ cuda_deb_check.stat.exists | default(false) }}"
+      when: cuda_source_file.stat.exists
+
+    - name: Install .deb package
+      apt:
+        deb: "/tmp/cuda.deb"
+      when: cuda_source_file.stat.exists and (cuda_deb_check.stat.exists | default(false))
+      register: deb_installed
+
+    - name: Add apt key
+      apt_key:
+        file: "/var/cuda-repo-{{ apt_key_version }}/7fa2af80.pub"
+      when: deb_installed is defined and deb_installed.changed
+      register: key_added
+
+    - name: Install CUDA
+      apt:
+        name: cuda
+        state: present
+        update_cache: yes
+      when: key_added is defined and key_added.changed
+      register: cuda_installed
+
+    - name: Copy patches .deb files
+      copy:
+        dest: "/tmp/{{ item }}"
+        src: "{{ item }}"
+      with_items:
+        - "cuda-repo-{{ patch_prefix }}.1-1_amd64.deb"
+        - "cuda-repo-{{ patch_prefix }}.2-1_amd64.deb"
+      when: cuda_installed is defined and cuda_installed.changed
+
+    - name: Install patches .deb packages
+      apt:
+        deb: "/tmp/{{ item }}"
+        force: yes
+      with_items:
+        - "cuda-repo-{{ patch_prefix }}.1-1_amd64.deb"
+        - "cuda-repo-{{ patch_prefix }}.2-1_amd64.deb"
+      when: cuda_installed is defined and cuda_installed.changed
+      register: patches_installed
+
+    - name: Upgrade CUDA
+      apt:
+        name: cuda
+        state: latest
+        update_cache: yes
+      when: patches_installed is defined and patches_installed.changed
+      register: cuda_upgraded
+
+    - name: Check for running processes (alternative method)
+      shell: ps aux | grep -v grep | grep -E '(python|gmx|docker|alphafold)' | wc -l
+      register: process_count
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Notify reboot only if CUDA was installed/upgraded and no jobs are running
+      command: echo "Reboot is needed"
+      notify: reboot the machine
+      when: 
+        - (cuda_installed is defined and cuda_installed.changed) or (cuda_upgraded is defined and cuda_upgraded.changed)
+        - running_jobs.stdout_lines | length == 0
+        - process_count.stdout | int < 5
+  when: cuda_version_check.rc != 0 or "V10.2" not in cuda_version_check.stdout or nvidia_smi_check.rc != 0 or not cuda_10_2_dir.stat.exists

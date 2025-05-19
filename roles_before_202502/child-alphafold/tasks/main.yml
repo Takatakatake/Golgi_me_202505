@@ -1,0 +1,63 @@
+- name: create directory for alphafold
+  file:
+    path: "{{ install_prefix }}"
+    state: directory
+
+- name: mount admin /opt/alphafold
+  mount:
+    path: "{{ install_prefix }}"
+    src: "GolgiAdmin:/opt/alphafold"
+    fstype: nfs
+    state: mounted
+
+- name: install docker for alphafold
+  apt:
+    pkg:
+      - docker-ce
+      - docker-ce-cli
+    update_cache: yes
+    state: latest
+
+- name: pull docker image for nvidia/cuda:11.4-base
+  command:
+    cmd: docker pull nvidia/cuda:11.4.0-base
+
+- name: copy gpgkey to tmp
+  copy:
+    dest: "/tmp/{{ gpgkey_path }}"
+    src: "{{ gpgkey_path }}"
+
+- name: add gpg key for nvidia-docker
+  command: 
+    cmd: "sudo apt-key add /tmp/{{ gpgkey_path }}"
+
+- name: copy nvidia-container-runtime list to /etc/apt/sources.list.d/
+  copy:
+    dest: "/etc/apt/sources.list.d/nvidia-container-runtime.list"
+    src: "{{ ncr_list }}"
+
+- name: update apt
+  apt:
+    update_cache: yes
+
+- name: restart docker
+  service:
+    name: docker
+    state: restarted
+
+- name: confirm or build nvidia/cuda:11.4.0-base
+  command:
+    cmd: docker run --rm --gpus all nvidia/cuda:11.4.0-base nvidia-smi
+
+- name: build docker
+  command:
+      cmd: "docker build -f {{ install_prefix }}/alphafold/docker/Dockerfile -t alphafold {{ install_prefix }}/alphafold"
+
+- name: install python3-pip
+  apt:
+    name: python3-pip
+    state: present
+
+- name: install docker requirements by pip
+  command:
+    cmd: "python3 -m pip install -r {{ install_prefix }}/alphafold/docker/requirements.txt"

@@ -1,0 +1,65 @@
+# /srv/ansible/roles/cuda-11.4/tasks/main.yml
+---
+  - name: Check source file existence
+    stat:
+      path: "{{ role_path }}/files/cuda-repo-{{ deb_version }}_amd64.deb"
+    register: cuda_source_file
+    delegate_to: localhost
+  
+  - name: Debug source file path
+    debug:
+      msg: "Source file exists: {{ cuda_source_file.stat.exists }} at {{ role_path }}/files/cuda-repo-{{ deb_version }}_amd64.deb"
+  
+  - name: Copy CUDA .deb files
+    copy:
+      src: "files/cuda-repo-{{ deb_version }}_amd64.deb"
+      dest: "/tmp/cuda.deb"
+      mode: '0644'
+    when: cuda_source_file.stat.exists
+    register: copy_result
+  
+  - name: Skip CUDA installation if source file missing
+    debug:
+      msg: "WARNING: CUDA source file not found. Installation will be skipped."
+    when: not cuda_source_file.stat.exists
+  
+  - name: Verify .deb file exists after copy
+    stat:
+      path: "/tmp/cuda.deb"
+    register: cuda_deb_check
+    when: cuda_source_file.stat.exists
+  
+  - name: Show copy status
+    debug:
+      msg: "CUDA .deb file exists: {{ cuda_deb_check.stat.exists | default(false) }}"
+    when: cuda_source_file.stat.exists
+  
+  - name: Install .deb package
+    apt:
+      deb: "/tmp/cuda.deb"
+    when: cuda_source_file.stat.exists and (cuda_deb_check.stat.exists | default(false))
+    register: deb_installed
+  
+  - name: Add apt key
+    apt_key:
+      file: "/var/cuda-repo-{{ cuda_version }}/7fa2af80.pub"
+    when: deb_installed is defined and deb_installed.changed
+    register: key_added
+  
+  - name: Install CUDA
+    apt:
+      name: cuda-11-4
+      state: present
+      update_cache: yes
+    when: key_added is defined and key_added.changed
+    notify: reboot the machine
+  
+  # Commented out as per original file
+  #- name: Upgrade CUDA
+  #  apt:
+  #    name: cuda
+  #    state: latest
+  #    update_cache: yes
+  #  notify: reboot the machine
+  
+  - meta: flush_handlers

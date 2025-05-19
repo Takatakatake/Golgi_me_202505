@@ -1,0 +1,136 @@
+# /srv/ansible/roles/nis-server/tasks/main.yml
+---
+  - name: Check if NIS server is running
+    command: systemctl status ypserv
+    register: ypserv_status
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: Check if NIS database is properly initialized
+    command: ypcat passwd
+    register: nis_db_status
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: install nis package
+    apt:
+      name: nis
+      state: present
+      update_cache: yes
+    notify: restart nis
+    when: ypserv_status.rc != 0
+  
+  - name: Check if defaultdomain is already set
+    command: cat /etc/defaultdomain
+    register: default_domain
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: set defaultdomain
+    copy:
+      dest: /etc/defaultdomain
+      content: "{{ domain }}"
+    notify: restart nis
+    when: default_domain.rc != 0 or domain not in default_domain.stdout
+  
+  - name: Check NIS server configuration
+    command: grep -E "^NISSERVER=" /etc/default/nis
+    register: nis_server_config
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: configure /etc/default/nis
+    replace:
+      path: /etc/default/nis
+      regexp: '^NISSERVER=false'
+      replace: 'NISSERVER=master'
+    when: nis_server_config.rc != 0 or "NISSERVER=master" not in nis_server_config.stdout
+  
+  - name: Check securenets configuration
+    command: grep -E "^#0.0.0.0 0.0.0.0" /etc/ypserv.securenets
+    register: securenets_config
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: remove all IP accept setting for admin node
+    replace:
+      path: /etc/ypserv.securenets
+      regexp: '^0.0.0.0 0.0.0.0'
+      replace: '#0.0.0.0 0.0.0.0'
+    notify: restart nis
+    when: securenets_config.rc != 0
+  
+  - name: Check IP range restriction
+    command: grep -E "^255.255.255.0 192.168.2.0" /etc/ypserv.securenets
+    register: ip_restriction
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: add IP range restriction for admin node
+    lineinfile:
+      path: /etc/ypserv.securenets
+      insertafter: '^#0.0.0.0'
+      line: '255.255.255.0 192.168.2.0'
+    notify: restart nis
+    when: ip_restriction.rc != 0
+  
+  - meta: flush_handlers
+  
+  - name: install pip3 to install pexpect
+    apt:
+      name: python3-pip
+      state: present
+      update_cache: yes
+  
+  - name: Check domainname
+    command: domainname
+    register: current_domainname
+    ignore_errors: yes
+    changed_when: false
+  
+  - name: set domainname
+    command: "domainname {{ domain }}"
+    when: current_domainname.rc != 0 or domain not in current_domainname.stdout
+  
+  - name: install pexpect for ypinit
+    pip:
+      name: pexpect
+    become: yes
+  
+  - name: Check if ypinit has been executed
+    stat:
+      path: /var/yp/nicknames
+    register: nicknames_file
+
+  - name: excute ypinit
+    expect:
+      command: /usr/lib/yp/ypinit -m
+      responses:
+        "^.*next host to add:": "\x04"
+        ? |
+          ^Is this correct?.*[y/n: y]
+        : "y"
+    when: >
+      not nicknames_file.stat.exists or 
+      ypserv_status.rc != 0 or 
+      nis_db_status.rc != 0
+
+  - name: Check MINGID setting
+    command: grep -E "^MINGID=" /var/yp/Makefile
+    register: mingid
+    ignore_errors: yes
+    changed_when: false
+
+  - name: modify MINGID in yp Makefile
+    lineinfile:
+      path: /var/yp/Makefile
+      regexp: '^MINGID='
+      line: 'MINGID=999'
+    when: mingid.rc != 0 or "MINGID=999" not in mingid.stdout
+
+  - name: Update NIS database if changes were made
+    command: /usr/bin/make -C /var/yp
+    when: >
+      mingid.changed or
+      default_domain.changed or
+      (nicknames_file.stat.exists == false)

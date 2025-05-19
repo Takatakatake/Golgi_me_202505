@@ -1,0 +1,14 @@
+- hosts: localhost
+  connection: local
+  become: yes
+  roles:
+    - role: apt
+    - role: admin-ubuntu
+    - role: nfs
+    - role: nis-server
+    - role: gfortran
+    - role: gromacs-2022.4
+    - role: slurm
+      services:
+        - slurmctld.service
+    - role: admin-alphafold

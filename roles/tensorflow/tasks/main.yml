@@ -1,0 +1,101 @@
+# /srv/ansible/roles/tensorflow/tasks/main.yml
+---
+- name: Check if Docker is already installed
+  command: which docker
+  register: docker_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Check if NVIDIA Docker is already installed
+  command: dpkg -l nvidia-docker2
+  register: nvidia_docker_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Define preferred Docker version
+  set_fact:
+    docker_version: "5:20.10.12~3-0~ubuntu-{{ ansible_distribution_release }}"
+  when: docker_preferred_version is not defined
+
+- name: install some packages
+  apt:
+    name: ["apt-transport-https", "ca-certificates", "software-properties-common"]
+    state: present
+    update_cache: yes
+
+- name: add an apt key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+  when: docker_check.rc != 0
+
+- name: add a docker stable repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+  when: docker_check.rc != 0
+
+- name: Get available Docker versions
+  shell: apt-cache madison docker-ce | awk '{print $3}'
+  register: available_docker_versions
+  changed_when: false
+  when: docker_check.rc != 0
+
+- name: Install specific Docker version if available
+  apt:
+    name: "docker-ce={{ docker_version }}"
+    update_cache: yes
+  when: docker_check.rc != 0 and docker_version in available_docker_versions.stdout
+
+- name: Install latest Docker version if preferred version not available
+  apt:
+    name: docker-ce
+    update_cache: yes
+  when: docker_check.rc != 0 and (available_docker_versions is not defined or docker_version not in available_docker_versions.stdout)
+
+- name: Check GPG key URL validity
+  command: curl -s -I https://nvidia.github.io/nvidia-docker/gpgkey
+  register: gpg_url_check
+  ignore_errors: yes
+  changed_when: false
+  when: nvidia_docker_check.rc != 0
+  tags:
+    - nvidia-docker
+
+- name: Warn if GPG key URL is not accessible
+  debug:
+    msg: "WARNING: The NVIDIA Docker GPG key URL might not be accessible. Please verify the URL."
+  when: gpg_url_check is defined and gpg_url_check is not skipped and gpg_url_check.rc is defined and gpg_url_check.rc != 0
+  tags:
+    - nvidia-docker
+
+- name: add an apt key for nvidia-docker
+  apt_key:
+    url: https://nvidia.github.io/nvidia-docker/gpgkey
+    state: present
+  tags:
+    - nvidia-docker
+  when: nvidia_docker_check.rc != 0
+
+- name: add apt repositories
+  get_url:
+    url: "https://nvidia.github.io/nvidia-docker/ubuntu{{ ansible_distribution_version }}/nvidia-docker.list"
+    dest: /etc/apt/sources.list.d/nvidia-docker.list
+  tags:
+    - nvidia-docker
+  when: nvidia_docker_check.rc != 0
+
+- name: Ensure Docker is running before NVIDIA Docker installation
+  systemd:
+    name: docker
+    state: started
+  when: docker_check.rc == 0 and nvidia_docker_check.rc != 0
+
+- name: install nvidia-docker
+  apt:
+    name: nvidia-docker2
+    update_cache: yes
+  notify: restart docker daemon
+  tags:
+    - nvidia-docker
+  when: nvidia_docker_check.rc != 0

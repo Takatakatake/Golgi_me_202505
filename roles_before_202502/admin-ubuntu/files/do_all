@@ -1,0 +1,9 @@
+#!/bin/bash
+
+nodes_files=/etc/hosts
+
+for node in `grep 192 ${nodes_files} | awk '{print $2}'`; do
+    test "${node}" == "GolgiAdmin" && continue
+    test "${node}" == "GolgiFS" && continue
+    ssh -t ansible@${node} "$@"
+done

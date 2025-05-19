@@ -1,0 +1,160 @@
+# /srv/ansible/roles/child-alphafold/tasks/main.yml
+---
+- name: Check if AlphaFold directory exists
+  stat:
+    path: "{{ install_prefix }}"
+  register: alphafold_dir
+
+- name: Check if AlphaFold is already mounted
+  shell: mount | grep "{{ install_prefix }}"
+  register: alphafold_mount
+  ignore_errors: yes
+  changed_when: false
+
+- name: create directory for alphafold
+  file:
+    path: "{{ install_prefix }}"
+    state: directory
+  when: not alphafold_dir.stat.exists
+
+- name: mount admin /opt/alphafold
+  mount:
+    path: "{{ install_prefix }}"
+    src: "GolgiAdmin:/opt/alphafold"
+    fstype: nfs
+    state: mounted
+  when: alphafold_mount.rc != 0 or alphafold_mount.stdout == ""
+
+- name: Check if Docker is installed
+  command: which docker
+  register: docker_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: install docker for alphafold
+  apt:
+    pkg:
+      - docker-ce
+      - docker-ce-cli
+    update_cache: yes
+    state: latest
+  when: docker_check.rc != 0
+
+- name: Check if CUDA Docker image exists
+  command: docker images -q nvidia/cuda:11.4.0-base
+  register: cuda_image
+  ignore_errors: yes
+  changed_when: false
+
+- name: pull docker image for nvidia/cuda:11.4-base
+  command:
+    cmd: docker pull nvidia/cuda:11.4.0-base
+  when: cuda_image.stdout == ""
+
+- name: Verify nvidia-container-runtime repository file exists
+  stat:
+    path: /etc/apt/sources.list.d/nvidia-container-runtime.list
+  register: ncr_list_check
+
+- name: copy gpgkey to tmp
+  copy:
+    dest: "/tmp/{{ gpgkey_path }}"
+    src: "{{ gpgkey_path }}"
+  when: not ncr_list_check.stat.exists
+
+- name: Check if GPG key is already added
+  command: apt-key list
+  register: gpgkey_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: add gpg key for nvidia-docker
+  command:
+    cmd: "sudo apt-key add /tmp/{{ gpgkey_path }}"
+  when: gpgkey_check.rc != 0 or "NVIDIA CORPORATION" not in gpgkey_check.stdout
+
+- name: copy nvidia-container-runtime list to /etc/apt/sources.list.d/
+  copy:
+    dest: "/etc/apt/sources.list.d/nvidia-container-runtime.list"
+    src: "{{ ncr_list }}"
+  when: not ncr_list_check.stat.exists
+
+- name: Verify nvidia-container-runtime repository file
+  command: cat /etc/apt/sources.list.d/nvidia-container-runtime.list
+  register: ncr_content
+  changed_when: false
+  when: ncr_list_check.stat.exists
+
+- name: Check if repository is compatible with Ubuntu version
+  shell: grep -q "ubuntu{{ ansible_distribution_version }}" /etc/apt/sources.list.d/nvidia-container-runtime.list
+  register: ubuntu_version_check
+  ignore_errors: yes
+  changed_when: false
+  when: ncr_list_check.stat.exists
+
+- name: Warn if repository might not be compatible
+  debug:
+    msg: "WARNING: The NVIDIA Docker repository might not be compatible with Ubuntu {{ ansible_distribution_version }}. Please verify the repository file."
+  when: ubuntu_version_check is defined and ubuntu_version_check.get('rc', 0) != 0
+
+
+- name: update apt
+  apt:
+    update_cache: yes
+
+- name: Check if Docker service is running
+  command: systemctl status docker
+  register: docker_status
+  ignore_errors: yes
+  changed_when: false
+
+- name: restart docker
+  service:
+    name: docker
+    state: restarted
+  when: docker_status.rc != 0
+
+- name: Check if NVIDIA Docker is working
+  command: docker run --rm --gpus all nvidia/cuda:11.4.0-base nvidia-smi
+  register: nvidia_docker_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: confirm or build nvidia/cuda:11.4.0-base
+  command:
+    cmd: docker run --rm --gpus all nvidia/cuda:11.4.0-base nvidia-smi
+  when: nvidia_docker_check.rc != 0
+
+- name: Check if AlphaFold Docker image exists
+  command: docker images -q alphafold
+  register: alphafold_image
+  ignore_errors: yes
+  changed_when: false
+
+- name: Build AlphaFold Docker image with timeout extension
+  block:
+    - name: Execute Docker build command
+      command: "docker build -f {{ install_prefix }}/alphafold/docker/Dockerfile -t alphafold {{ install_prefix }}/alphafold"
+      async: 3600
+      poll: 60
+  rescue:
+    - name: Display error message if build fails
+      debug:
+        msg: "AlphaFold Docker image build failed. This might be due to network issues or insufficient resources. Please try building manually."
+  when: alphafold_image.stdout == "" and not ansible_check_mode
+
+
+- name: install python3-pip
+  apt:
+    name: python3-pip
+    state: present
+
+- name: Check if Python requirements file exists
+  stat:
+    path: "{{ install_prefix }}/alphafold/docker/requirements.txt"
+  register: req_file
+
+- name: install docker requirements by pip
+  command:
+    cmd: "python3 -m pip install -r {{ install_prefix }}/alphafold/docker/requirements.txt"
+  when: req_file.stat.exists

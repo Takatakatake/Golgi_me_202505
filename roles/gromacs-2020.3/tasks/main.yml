@@ -1,0 +1,136 @@
+# /srv/ansible/roles/gromacs-2020.3/tasks/main.yml
+---
+- name: Check for running jobs
+  command: squeue -h -o "%i" -t running -w {{ ansible_hostname }}
+  register: running_jobs
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display warning if running jobs detected
+  debug:
+    msg: "WARNING: There are running jobs on this node. Proceeding with Gromacs installation might impact performance."
+  when: running_jobs.stdout_lines | length > 0
+
+- name: install fftw and cmake
+  apt:
+    name: ["libfftw3-dev", "cmake"]
+    state: present
+
+- name: install gcc-8 and g++-8 to use cmake in CUDA10.2
+  apt:
+    name: ["gcc-8", "g++-8"]
+    state: present
+
+- name: Check if Gromacs is already installed
+  stat:
+    path: "{{ install_prefix }}-{{ version }}/bin/gmx"
+  register: gmx_result
+
+- name: Check Gromacs version if installed
+  command: "{{ install_prefix }}-{{ version }}/bin/gmx --version"
+  register: gmx_version
+  ignore_errors: yes
+  changed_when: false
+  when: gmx_result.stat.exists
+
+- name: Check GPU type
+  shell: nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1
+  register: gpu_type
+  ignore_errors: yes
+  changed_when: false
+
+- name: Set GPU architecture for GTX 780Ti
+  set_fact:
+    cuda_target: "-DGMX_CUDA_TARGET_SM=35"
+  when: gpu_type.stdout is defined and 'GTX 780Ti' in gpu_type.stdout
+
+- name: Set GPU architecture for RTX 2080
+  set_fact:
+    cuda_target: "-DGMX_CUDA_TARGET_SM=75"
+  when: gpu_type.stdout is defined and 'RTX 2080' in gpu_type.stdout
+
+- name: Set GPU architecture from inventory (fallback)
+  set_fact:
+    cuda_target: "-DGMX_CUDA_TARGET_SM=35"
+  when: 
+    - cuda_target is not defined
+    - inventory_hostname in groups['nodes_gtx780ti']
+
+- name: Set GPU architecture from inventory for RTX 2080 (fallback)
+  set_fact:
+    cuda_target: "-DGMX_CUDA_TARGET_SM=75"
+  when: 
+    - cuda_target is not defined
+    - inventory_hostname in groups['nodes_rtx2080']
+
+- name: Set default GPU architecture
+  set_fact:
+    cuda_target: "-DGMX_CUDA_TARGET_SM=35;52;60;75"
+  when: cuda_target is not defined
+
+- name: ensure a source directory exists
+  file:
+    path: "{{ source_directory }}"
+    state: directory
+
+# ここから下は既存インストールがない場合のみ実行
+- block:
+    - name: unarchive source files
+      unarchive:
+        src: "gromacs-{{ version }}.tar.gz"
+        dest: "{{ source_directory }}"
+      
+    - name: fix cmake
+      lineinfile:
+        path: "{{ source_directory }}/gromacs-{{ version }}/cmake/gmxManageNvccConfig.cmake"
+        regexp: "{{ item }}"
+        state: absent
+      with_items:
+        - '(.*arch=compute_20,code=sm_20.*)'
+        - '(.*arch=compute_30,code=sm_30.*)'
+      
+    - name: create builddir
+      tempfile:
+        state: directory
+        suffix: gromacs-build
+      register: builddir
+      
+    - name: unarchive regressiontest files
+      unarchive:
+        src: "regressiontests-{{ version }}.tar.gz"
+        dest: "{{ source_directory }}"
+      
+    - name: configure
+      command: >
+        cmake {{ source_directory }}/gromacs-{{ version }} 
+        -DCMAKE_C_COMPILER=gcc-8 
+        -DCMAKE_CXX_COMPILER=g++-8 
+        -DGMX_SIMD=AVX2_256 
+        -DGMX_GPU=ON 
+        {{ cuda_target }}
+        -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda 
+        -DREGRESSIONTTEST_PATH={{ source_directory}}/regressiontests-{{ version }} 
+        -DCMAKE_INSTALL_PREFIX={{ install_prefix }}-{{ version }}
+      args:
+        chdir: "{{ builddir.path }}"
+      
+    - name: compile, test and install
+      make:
+        target: "{{ item }}"
+        chdir: "{{ builddir.path }}"
+      with_items:
+        - all
+        - check
+        - install
+      
+    - name: clear builddir
+      file:
+        path: "{{ builddir.path }}"
+        state: absent
+      
+    - name: make symbolic link
+      file:
+        src: "{{ install_prefix }}-{{ version }}"
+        dest: "{{ install_prefix }}"
+        state: link
+  when: not gmx_result.stat.exists

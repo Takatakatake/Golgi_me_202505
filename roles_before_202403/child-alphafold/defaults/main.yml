@@ -1,0 +1,4 @@
+install_prefix: /opt/alphafold
+ubuntu_version: Ubuntu20.04
+gpgkey_path: gpgkey.gpg
+ncr_list: nvidia-container-runtime.list

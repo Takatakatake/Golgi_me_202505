@@ -1,0 +1,14 @@
+services: []
+
+source_directory: /opt/src
+install_prefix: /opt/slurm
+
+slurm_version: 22.05.7
+
+user: slurm
+
+spool_dir: /var/spool/slurm.spool
+state_dir: /var/spool/slurm.state
+accounting_file: /var/spool/slurm.accounting
+
+slurm_logdir: /var/log/slurm

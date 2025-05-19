@@ -1,0 +1,7 @@
+- name: restart nis
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - rpcbind
+    - nis

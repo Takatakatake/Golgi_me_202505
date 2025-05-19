@@ -1,0 +1,45 @@
+# /srv/ansible/roles/cuda-10.2/handlers/main.yml
+---
+  - name: reboot the machine
+    block:
+      - name: Check for running jobs again before reboot
+        command: squeue -h -o "%i" -t running -w {{ ansible_hostname }}
+        register: running_jobs_before_reboot
+        ignore_errors: yes
+        changed_when: false
+  
+      - name: Check for critical processes again before reboot
+        shell: ps aux | grep -v grep | grep -E '(python|gmx|docker|alphafold)' | wc -l
+        register: process_count_before_reboot
+        ignore_errors: yes
+        changed_when: false
+  
+      - name: Set fact for running jobs
+        set_fact:
+          has_running_jobs: >
+            {{ (running_jobs_before_reboot.rc == 0 and running_jobs_before_reboot.stdout_lines | length > 0) or
+               (process_count_before_reboot.stdout | int > 5) }}
+  
+      - name: Abort reboot if jobs are detected
+        fail:
+          msg: "Reboot aborted - running jobs detected at reboot time"
+        when: has_running_jobs
+  
+      - name: Notify users of imminent reboot via wall
+        command: 'wall "SYSTEM NOTICE: This node will reboot in 2 minutes due to CUDA driver updates. Please save your work."'
+        ignore_errors: yes
+        changed_when: false
+        when: not has_running_jobs
+  
+      - name: Wait 2 minutes before reboot
+        pause:
+          minutes: 2
+        when: not has_running_jobs
+  
+      - name: Perform actual reboot
+        reboot:
+          reboot_timeout: 600
+          pre_reboot_delay: 5
+          post_reboot_delay: 30
+          test_command: uptime
+        when: not has_running_jobs
